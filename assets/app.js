@@ -1,140 +1,46 @@
 'use strict';
-
-// ---------- DOM + utility ----------
 const $ = sel => document.querySelector(sel);
-const log = (...args) => { const el = $('#log'); el.textContent += args.join(' ') + "\n"; el.scrollTop = el.scrollHeight; };
 const human = n => n.toLocaleString();
+function normalizePath(p){ return p.replace(/\\/g,'/').replace(/^\.\//,'').replace(/\/{2,}/g,'/'); }
+function splitPath(p){ p = normalizePath(p); const parts = p.split('/'); const file = parts.length?parts[parts.length-1]:''; if(parts.length) parts.pop(); return {parts,file}; }
+function pathJoin(){ return Array.from(arguments).filter(Boolean).join('/').replace(/\/{2,}/g,'/'); }
 
-function normalizePath(p){ return p.replaceAll('\\','/').replace(/^\.\//,'').replace(/\/{2,}/g,'/'); }
-function pathJoin(){ return normalizePath(Array.from(arguments).filter(Boolean).join('/')).replace(/(^\/+)|((?<=:)\/+)/g,''); }
-function splitPath(p){ p = normalizePath(p); const parts = p.split('/'); const file = parts.pop(); return {parts,file}; }
-
-// ---------- PN/DRW detection (deterministic mapper) ----------
-let detectedRoot = '';
-let lastAutoRoot = '';
-let lastFileName = '';
-let inZip = null;
-let inEntries = [];   // {path, entry}
-let lastManifest = null; // built from last preview/transform
+let inZip = null, inEntries = [], detectedRoot = '', lastFileName = '', extractedTitle = '';
 
 function detectTopRoot(entries){
   const firstSegs = new Set(entries.map(e => normalizePath(e.path).split('/')[0]));
-  if(firstSegs.size === 1){
-    const seg = Array.from(firstSegs)[0];
-    if(!/\.[a-z0-9]+$/i.test(seg)) return seg; // looks like a folder
-  }
+  if(firstSegs.size === 1){ const seg = Array.from(firstSegs)[0]; if(!/\.[a-z0-9]+$/i.test(seg)) return seg; }
   return '';
 }
-
-function extractIdCandidate(text){
-  if(!text) return '';
-  const m = /(?:RFQ|PO)\s*([0-9]+)/i.exec(text);
-  return m ? m[1] : '';
-}
-
+function extractIdCandidate(text){ if(!text) return ''; const m = /(?:RFQ|PO)\s*([0-9]+(?:-\d+)*)/i.exec(text); return m ? m[1] : ''; }
 function autoRootForMode(mode){
   const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName);
   if(mode === 'po') return id ? `PO${id} Drawing package` : 'PO Drawing package';
   return id ? `RFQ${id} Drawing package` : 'RFQ Drawing package';
 }
+function findPnDrwIndices(dirs){ const pnIdx = dirs.findIndex(s => /^PN[^/]+$/i.test(s)); if(pnIdx === -1 || pnIdx+1 >= dirs.length) return {pnIdx:-1, drwIdx:-1}; const drwIdx = /^DRW[^/]+$/i.test(dirs[pnIdx+1]) ? pnIdx+1 : -1; return {pnIdx, drwIdx}; }
 
-function findPnDrwIndices(dirs){
-  const pnIdx = dirs.findIndex(s => /^PN[^/]+$/i.test(s));
-  if(pnIdx === -1 || pnIdx+1 >= dirs.length) return {pnIdx:-1, drwIdx:-1};
-  const drwIdx = /^DRW[^/]+$/i.test(dirs[pnIdx+1]) ? pnIdx+1 : -1;
-  return {pnIdx, drwIdx};
-}
-
-function mapDeterministic(relPath, opts){
-  const p = normalizePath(relPath);
-  const sp = splitPath(p);
-  // strip segments
-  let dirs = sp.parts;
-  if(opts.stripList?.length){
-    const lower = new Set(opts.stripList.map(s=>String(s).toLowerCase()));
-    dirs = dirs.filter(seg => !lower.has(String(seg).toLowerCase()));
-  }
-  // ignore OS cruft
-  if(sp.file.endsWith('.DS_Store') || sp.file.endsWith('Thumbs.db')) return null;
-
-  const {pnIdx, drwIdx} = findPnDrwIndices(dirs);
-  if(pnIdx === -1 || drwIdx === -1) return opts.includeUnknown ? pathJoin(opts.root, 'attachments', sp.file) : null;
-
-  const ext = (sp.file.split('.').pop() || '').toLowerCase();
-  const keepPO = new Set(['pdf','dxf','stp','step']);
-  const keepRFQ = new Set(['pdf']);
-  const ok = opts.mode === 'po' ? keepPO.has(ext) : keepRFQ.has(ext);
-  if(!ok) return opts.includeUnknown ? pathJoin(opts.root, 'attachments', sp.file) : null;
-
-  // preserve PN/DRW path
-  return pathJoin(opts.root, dirs[pnIdx], dirs[drwIdx], sp.file);
-}
-
-function collisionSafePath(destPath, seen){
-  let p = destPath;
-  if(!seen.has(p)) { seen.add(p); return p; }
-  const m = /(.*?)(?: \((\d+)\))?(\.[^.]+)?$/.exec(destPath);
-  let base = m[1], n = parseInt(m[2]||'1',10), ext = m[3]||'';
-  do { n++; p = `${base} (${n})${ext}`; } while(seen.has(p));
-  seen.add(p);
-  return p;
-}
-
-// ---------- Load ZIP ----------
-async function loadZip(file){
-  if(!window.JSZip){ alert('JSZip failed to load. Check network or self-host JSZip.'); return; }
-  $('#bar').style.width = '0%';
-  $('#stats').textContent = 'Reading zip…';
-  inZip = await JSZip.loadAsync(file);
-  inEntries = [];
-  inZip.forEach((relPath, entry) => { if(!entry.dir) inEntries.push({ path: normalizePath(relPath), entry }); });
-  $('#stats').textContent = `Loaded ${human(inEntries.length)} files`;
-  $('#btnGo').disabled = false; $('#btnPreview').disabled = false;
-  $('#btnPdfRFQ').disabled = true; $('#btnPdfPO').disabled = true;
-  $('#fileInfo').innerHTML = `<span class="filetag">${file.name}</span> <span class="badge">${(file.size/1e6).toFixed(1)} MB</span>`;
-  lastFileName = file.name;
-  log('Zip loaded:', file.name, `(${human(inEntries.length)} files)`);
-
-  detectedRoot = detectTopRoot(inEntries);
-  log('Detected top folder:', detectedRoot || '(none)');
-
-  // auto-suggest root based on mode + detected id
-  const mode = $('#mode').value;
-  const suggested = autoRootForMode(mode);
-  const cur = $('#rootName').value.trim();
-  if(cur === '' || cur === lastAutoRoot || /^PO\b.*Drawing package$/i.test(cur) || /^RFQ\b.*Drawing package$/i.test(cur)){
-    $('#rootName').value = suggested;
-    lastAutoRoot = suggested;
-  }
-}
-
-// ---------- Manifest builder ----------
-function buildManifest(opts){
-  const mapFn = (rp)=>mapDeterministic(rp, opts);
+// -------- Manifest + Preview --------
+function buildManifest(mode, root){
   const items = [];
   for(const e of inEntries){
-    const dest = mapFn(e.path);
-    if(!dest) continue;
-    const parts = normalizePath(dest).split('/');
-    // expect <root>/<PN>/<DRW>/<file>
-    const pn = parts.length>=3 ? parts[parts.length-3] : null;
-    const drw = parts.length>=2 ? parts[parts.length-2] : null;
-    const name = parts[parts.length-1];
-    const ext = (name.split('.').pop()||'').toLowerCase();
-    items.push({ src:e.path, dest, pn, drw, name, ext });
+    const p = normalizePath(e.path);
+    const sp = splitPath(p); const dirs = sp.parts;
+    const {pnIdx, drwIdx} = findPnDrwIndices(dirs);
+    if(pnIdx === -1 || drwIdx === -1) continue;
+    const afterDrw = dirs.slice(drwIdx+1);
+    const ext = (sp.file.split('.').pop()||'').toLowerCase();
+    if(mode === 'rfq' && ext !== 'pdf') continue;
+    const dest = pathJoin(root, dirs[pnIdx], dirs[drwIdx], afterDrw.join('/'), sp.file);
+    items.push({ src:e.path, dest, pn:dirs[pnIdx], drw:dirs[drwIdx], name:sp.file, ext });
   }
-  // group by PN/DRW
-  const groups = new Map(); // key: `${pn}/${drw}`
-  for(const it of items){
-    const key = `${it.pn}/${it.drw}`;
-    if(!groups.has(key)) groups.set(key, { pn: it.pn, drw: it.drw, files: [] });
-    groups.get(key).files.push(it);
-  }
-  const grouped = Array.from(groups.values()).sort((a,b)=> (a.pn+a.drw).localeCompare(b.pn+b.drw));
-  return { root: opts.root, mode: opts.mode, items, grouped };
+  const groups = []; const map = new Map();
+  for(const it of items){ const key = `${it.pn}/${it.drw}`; if(!map.has(key)) map.set(key,{pn:it.pn,drw:it.drw,names:[]}); map.get(key).names.push(it.name); }
+  for(const g of map.values()){ g.names.sort((a,b)=> a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'})); groups.push(g); }
+  groups.sort((a,b)=> (a.pn+a.drw).localeCompare(b.pn+b.drw));
+  return { root, mode, items, groups };
 }
 
-// ---------- Preview ----------
 function buildTreeFromItems(items){
   const tree = {};
   for(const it of items){
@@ -153,7 +59,7 @@ function buildTreeFromItems(items){
       if(isDirA !== isDirB) return isDirA? -1 : 1;
       return a.localeCompare(b);
     });
-    let out = '';
+    let out='';
     for(const k of keys){
       const v = node[k];
       out += `${prefix}${v===null?'├──':'└──'} ${k}\n`;
@@ -164,101 +70,311 @@ function buildTreeFromItems(items){
   return render(tree);
 }
 
-async function preview(){
-  const opts = currentOpts();
-  const manifest = buildManifest(opts);
-  lastManifest = manifest;
-  $('#preview').textContent = buildTreeFromItems(manifest.items);
-  log('Preview built for', human(manifest.items.length), 'files across', human(manifest.grouped.length), 'drawings');
-  // Enable PDF buttons now that we have a manifest
-  $('#btnPdfRFQ').disabled = false;
-  $('#btnPdfPO').disabled = false;
+async function autoPreview(){
+  if(!inZip) return;
+  try{
+    const mode = $('#mode').value;
+    const root = ($('#rootName').value || '').trim() || autoRootForMode(mode);
+    const manifest = buildManifest(mode, root);
+    let tree = buildTreeFromItems(manifest.items) || '';
+    tree = tree.replace(/\n+$/,''); // trim trailing newlines
+    const totals = `Files: ${human(manifest.items.length)} · Drawings: ${human(manifest.groups.length)}`;
+    $('#preview').textContent = (tree || '(no matches)') + '\n' + totals;
+    $('#status').textContent = 'Preview updated.';
+  }catch(e){
+    $('#preview').textContent = '(preview error)'; $('#status').textContent = e.message || 'Preview error';
+  }
 }
 
-// ---------- Transform ----------
-async function transform(){
-  const t0 = performance.now();
-  const opts = currentOpts();
-  const manifest = buildManifest(opts);
-  lastManifest = manifest;
-
-  const out = new JSZip();
-  const seen = new Set();
-  let n = 0; const total = manifest.items.length;
-  $('#bar').style.width = '0%';
+// -------- Build outputs --------
+async function buildDrawingZipFromManifest(manifest){
+  const out = new JSZip(); let n = 0;
   for(const it of manifest.items){
     const data = await inZip.file(it.src).async('arraybuffer');
-    const dest = collisionSafePath(it.dest, seen);
-    out.file(dest, data, {date: new Date()});
-    n++;
-    if(n%10===0 || n===total){ $('#bar').style.width = ((n/total)*100).toFixed(1)+'%'; await new Promise(r=>requestAnimationFrame(r)); }
+    out.file(it.dest, data, {date: new Date()}); n++;
   }
-
-  $('#stats').textContent = `Packaging ${human(n)} files…`;
   const blob = await out.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:6}});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${opts.root||'package'}.zip`;
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 15000);
-
-  const dt = ((performance.now()-t0)/1000).toFixed(2);
-  $('#stats').textContent = `Done: ${human(n)} files → ${(blob.size/1e6).toFixed(1)} MB in ${dt}s`;
-  $('#bar').style.width = '100%';
-  log('ok: zip ready for download');
-
-  // Enable PDF buttons (manifest populated)
-  $('#btnPdfRFQ').disabled = false;
-  $('#btnPdfPO').disabled = false;
+  return { blob, count:n };
 }
 
-// ---------- Options ----------
-function currentOpts(){
-  const mode = $('#mode').value;
-  const root = $('#rootName').value.trim() || (mode==='po'?'PO Drawing package':'RFQ Drawing package');
-  const stripList = ['__macosx','export','out'];
-  if($('#stripTop').checked && detectedRoot){ stripList.push(detectedRoot); }
-  return { mode, root, stripList, includeUnknown: $('#includeUnknown').checked };
+// --- XLSX detection helpers ---
+function listXlsxPaths(){
+  const xs = [];
+  for(const e of inEntries){
+    const p = normalizePath(e.path);
+    if(/\.xlsx$/i.test(p)) xs.push(p);
+  }
+  return xs;
 }
 
-// ---------- Wire-up ----------
-(function init(){
-  $('#mode').addEventListener('change', ()=>{
-    const newMode = $('#mode').value;
-    const suggested = autoRootForMode(newMode);
-    const cur = $('#rootName').value.trim();
-    if(cur === '' || cur === lastAutoRoot || /^PO\b.*Drawing package$/i.test(cur) || /^RFQ\b.*Drawing package$/i.test(cur)){
-      $('#rootName').value = suggested; lastAutoRoot = suggested;
+function findWorkbookEntry(){
+  const xs = listXlsxPaths();
+  const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '';
+  if(id){
+    const want1 = `${id}/${id}.xlsx`.toLowerCase();
+    for(const e of inEntries){
+      if(normalizePath(e.path).toLowerCase() === want1) return e;
     }
+  }
+  const pat = /^(?:[^/]*\/)?(RFQ[^/]*|PO[^/]*)\/\1\.xlsx$/i;
+  for(const e of inEntries){
+    const p = normalizePath(e.path);
+    if(/\.xlsx$/i.test(p) && pat.test(p)) return e;
+  }
+  const cands = inEntries.filter(e => /\.xlsx$/i.test(e.path) && normalizePath(e.path).split('/').length >= 2);
+  cands.sort((a,b)=>{
+    const A = a.path.toLowerCase(), B = b.path.toLowerCase();
+    const s = (x)=> (x.includes('/rfq')?-10:0) + (x.includes('/po')?-8:0) + (x.match(/\/rfq[^/]*\.xlsx$/)?-2:0) + (x.match(/\/po[^/]*\.xlsx$/)?-2:0);
+    return (s(A)-s(B)) || A.length - B.length;
   });
+  return cands[0] || null;
+}
 
-  const drop = $('#drop');
-  const input = $('#file');
+// === Deterministic C4:F4 readers ===
+function a1ToColRow(a1){
+  const m = /^([A-Z]+)(\d+)$/.exec(a1.toUpperCase());
+  if(!m) return null;
+  const letters = m[1], row = parseInt(m[2],10);
+  let col = 0;
+  for(let i=0;i<letters.length;i++){ col = col*26 + (letters.charCodeAt(i)-64); }
+  return {col,row};
+}
+
+function withinC4toF4(a1){
+  const cr = a1ToColRow(a1);
+  if(!cr) return false;
+  return cr.row === 4 && cr.col >= 3 && cr.col <= 6;
+}
+
+// --- Fallback XLSX: read C4..F4 from sheet1.xml ---
+async function readC4F4_fromFallback(buf){
+  const inner = await JSZip.loadAsync(buf);
+  const getText = (p)=> inner.file(p) ? inner.file(p).async('string') : null;
+  const sharedStringsXml = await getText("xl/sharedStrings.xml");
+  let sst = [];
+  if(sharedStringsXml){
+    const doc = new DOMParser().parseFromString(sharedStringsXml, "application/xml");
+    sst = Array.from(doc.getElementsByTagName("si")).map(si => {
+      const tNodes = si.getElementsByTagName("t");
+      let t = ""; for(let i=0;i<tNodes.length;i++){ t += tNodes[i].textContent; }
+      return t.trim();
+    });
+  }
+  const sheetPath = inner.file("xl/worksheets/sheet1.xml") ? "xl/worksheets/sheet1.xml" : null;
+  if(!sheetPath) return '';
+  const xml = await inner.file(sheetPath).async('string');
+  const xdoc = new DOMParser().parseFromString(xml, "application/xml");
+  const cells = Array.from(xdoc.getElementsByTagName("c"));
+  const vals = [];
+  for(const c of cells){
+    const ref = c.getAttribute("r"); if(!ref) continue;
+    if(!withinC4toF4(ref)) continue;
+    const tAttr = c.getAttribute("t");
+    const vNode = c.getElementsByTagName("v")[0];
+    let val = "";
+    if(tAttr === "s" && vNode){
+      const idx = parseInt(vNode.textContent,10);
+      if(!isNaN(idx) && sst[idx] != null) val = sst[idx];
+    }else{
+      const isNode = c.getElementsByTagName("is")[0];
+      if(isNode){
+        const tNodes = isNode.getElementsByTagName("t");
+        for(let i=0;i<tNodes.length;i++){ val += tNodes[i].textContent; }
+      }else if(vNode){
+        val = vNode.textContent;
+      }
+    }
+    if(val && val.trim()) vals.push(val.trim());
+  }
+  return vals.join(' ');
+}
+
+// --- SheetJS: read C4..F4 from first sheet ---
+function readC4F4_fromSheetJS(buf){
+  const wb = XLSX.read(buf, { type:'array' });
+  const first = wb.SheetNames && wb.SheetNames.length ? wb.SheetNames[0] : null;
+  if(!first) return '';
+  const ws = wb.Sheets[first];
+  const parts = [];
+  for(const col of ['C','D','E','F']){
+    const cell = ws[col+'4'];
+    let text = '';
+    if(cell && typeof cell.v !== 'undefined') text = String(cell.v);
+    if(text && text.trim()) parts.push(text.trim());
+  }
+  return parts.join(' ');
+}
+
+// --- Title extraction: use C4:F4 ---
+async function extractTitleSmart(){
+  const picked = findWorkbookEntry();
+  const all = listXlsxPaths();
+  if(!picked) return { title:'', picked:null, all, engine:'none' };
+  const buf = await picked.entry.async('arraybuffer');
+  if(typeof XLSX !== 'undefined'){
+    try{
+      const t = readC4F4_fromSheetJS(buf);
+      if(t) return { title:t, picked, all, engine:'sheetjs-C4F4' };
+    }catch(e){
+      // ignore
+    }
+  }
+  try{
+    const t2 = await readC4F4_fromFallback(buf);
+    return { title:t2, picked, all, engine:'fallback-C4F4' };
+  }catch(e){
+    return { title:'', picked, all, engine:'fallback-error' };
+  }
+}
+
+// --- RFQ PDF finder ---
+function findTopLevelRFQPdf(){
+  // Prefer exact <ID>/<ID>.pdf when we can infer ID.
+  const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '';
+  if(id){
+    const want = `${id}/${id}.pdf`.toLowerCase();
+    for(const e of inEntries){
+      const p = normalizePath(e.path).toLowerCase();
+      if(p === want) return { path:e.path, entry:e.entry };
+    }
+  }
+  // Otherwise: match "RFQ*/RFQ*.pdf" exactly one folder down.
+  const cands = [];
+  const rx = /^([^/]+)\/\1\.pdf$/i;
+  for(const e of inEntries){
+    const p = normalizePath(e.path);
+    if(!/\.pdf$/i.test(p)) continue;
+    if(rx.test(p)) cands.push({ path:e.path, entry:e.entry });
+  }
+  if(cands.length){
+    cands.sort((a,b)=> a.path.length - b.path.length);
+    return cands[0];
+  }
+  return null;
+}
+
+function makeOverviewPdf(manifest){
+  const { jsPDF } = window.jspdf || {}; if(!jsPDF){ alert('jsPDF not loaded.'); return null; }
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const header = manifest.mode === 'rfq' ? 'RFQ Document list' : 'PO Document list';
+  doc.setFont('helvetica','bold'); doc.setFontSize(14);
+  doc.text(header, 20, 18);
+  if(extractedTitle){ doc.setFont('helvetica','normal'); doc.setFontSize(11); doc.text(extractedTitle, 20, 25); }
+  doc.setDrawColor(200); doc.line(20, 28, 190, 28);
+  doc.setFont('helvetica','bold'); doc.setFontSize(10);
+  const xPN=20,xDRW=70,xREF=130,yHead=36;
+  doc.text('Part number', xPN, yHead);
+  doc.text('Drawing folder', xDRW, yHead);
+  doc.text('Drawing ref.', xREF, yHead);
+  doc.setDrawColor(220); doc.line(20, yHead+2, 190, yHead+2);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  let y=yHead+8, maxY=285;
+  for(const g of manifest.groups){
+    const refs = g.names.join(', ');
+    const refLines = doc.splitTextToSize(refs, 60);
+    const rowH = 5 * Math.max(1, refLines.length);
+    if(y+rowH>maxY){
+      doc.addPage();
+      doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.text(header, 20, 18);
+      if(extractedTitle){ doc.setFont('helvetica','normal'); doc.setFontSize(11); doc.text(extractedTitle, 20, 25); }
+      doc.setDrawColor(200); doc.line(20, 28, 190, 28);
+      doc.setFont('helvetica','bold'); doc.setFontSize(10);
+      doc.text('Part number', xPN, yHead); doc.text('Drawing folder', xDRW, yHead); doc.text('Drawing ref.', xREF, yHead);
+      doc.setDrawColor(220); doc.line(20, yHead+2, 190, yHead+2);
+      doc.setFont('helvetica','normal'); doc.setFontSize(10);
+      y = yHead+8;
+    }
+    doc.text(g.pn||'', xPN, y);
+    doc.text(g.drw||'', xDRW, y);
+    doc.text(refLines, xREF, y);
+    y += rowH;
+  }
+  return doc.output('blob');
+}
+
+function download(name, blob){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 15000);
+}
+
+// -------- Build the final deliverable (top-level zip) --------
+async function onDownload(){
+  try{
+    if(!window.JSZip){ alert('JSZip failed to load (CDN blocked?).'); return; }
+    const mode = $('#mode').value;
+    const root = ($('#rootName').value || '').trim() || autoRootForMode(mode);
+    $('#status').textContent = 'Building…';
+    const manifest = buildManifest(mode, root);
+    if(manifest.items.length === 0){ $('#status').textContent = 'No files found in DRW folders.'; return; }
+
+    const { blob: drawingBlob } = await buildDrawingZipFromManifest(manifest);
+    const overviewBlob = makeOverviewPdf(manifest);
+    if(!overviewBlob){ $('#status').textContent = 'jsPDF missing.'; return; }
+
+    const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '';
+    const prefix = (mode==='rfq' ? (id?`RFQ${id}`:'RFQ') : (id?`PO${id}`:'PO'));
+    const safeTitle = (extractedTitle||'').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+    const topName = safeTitle ? `${prefix} ${safeTitle}.zip` : `${prefix}.zip`;
+
+    const top = new JSZip();
+    top.file(`${root}.zip`, drawingBlob);
+    top.file('File overview.pdf', overviewBlob);
+
+    if(mode === 'rfq'){
+      const rfq = findTopLevelRFQPdf();
+      if(rfq){
+        const rfqBlob = new Blob([await rfq.entry.async('arraybuffer')], {type:'application/pdf'});
+        top.file(rfq.path.split('/').pop(), rfqBlob);
+      }
+    }
+
+    const topBlob = await top.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:6}});
+    download(topName, topBlob);
+    $('#status').textContent = `Downloaded: ${topName}`;
+  }catch(e){
+    $('#status').textContent = e.message || 'Build failed';
+  }
+}
+
+// -------- Load ZIP + init --------
+async function loadZip(file){
+  $('#btnGo').disabled = true;
+  try{
+    if(!window.JSZip){ alert('JSZip failed to load (CDN blocked?).'); return; }
+    $('#status').textContent = 'Reading…';
+    inZip = await JSZip.loadAsync(file); inEntries = [];
+    inZip.forEach((relPath, entry) => { if(!entry.dir) inEntries.push({ path: normalizePath(relPath), entry }); });
+    detectedRoot = detectTopRoot(inEntries);
+    lastFileName = file.name;
+    $('#fileInfo').textContent = file.name;
+    $('#rootName').value = autoRootForMode($('#mode').value);
+    $('#status').textContent = `Ready (${human(inEntries.length)} files)`;
+
+    extractedTitle = '';
+    try{ 
+      const res = await extractTitleSmart();
+      extractedTitle = res.title || '';
+    }catch(_){ extractedTitle=''; }
+    $('#titleOut').textContent = extractedTitle || '(not detected)';
+
+    $('#btnGo').disabled = false;
+    autoPreview();
+  }catch(e){
+    $('#status').textContent = e.message || 'Failed to read zip'; $('#btnGo').disabled = true; $('#preview').textContent = '(no preview)';
+  }
+}
+
+(function init(){
+  $('#mode').addEventListener('change', ()=>{ $('#rootName').value = autoRootForMode($('#mode').value); autoPreview(); });
+  $('#rootName').addEventListener('input', ()=> autoPreview());
+
+  const drop = $('#drop'); const input = $('#file');
   drop.addEventListener('dragover', e=>{ e.preventDefault(); drop.classList.add('dragover'); });
   drop.addEventListener('dragleave', ()=> drop.classList.remove('dragover'));
-  drop.addEventListener('drop', e=>{
-    e.preventDefault(); drop.classList.remove('dragover');
-    const f = e.dataTransfer.files[0]; if(!f) return;
-    if(!/\.zip$/i.test(f.name)){ log('error: not a .zip'); return; }
-    loadZip(f).catch(err=>{ log('error:', err.message); });
-  });
+  drop.addEventListener('drop', e=>{ e.preventDefault(); drop.classList.remove('dragover'); const f = e.dataTransfer.files[0]; if(!f) return; if(!/\.zip$/i.test(f.name)){ $('#status').textContent = 'Please select a .zip export.'; return; } $('#status').textContent='Uploading…'; loadZip(f).catch(err=>{ $('#status').textContent = err.message; }); });
   drop.addEventListener('click', ()=> input.click());
-  input.addEventListener('change', ()=>{
-    const f = input.files[0]; if(!f) return;
-    if(!/\.zip$/i.test(f.name)){ log('error: not a .zip'); return; }
-    loadZip(f).catch(err=>{ log('error:', err.message); });
-  });
+  input.addEventListener('change', ()=>{ const f = input.files[0]; if(!f) return; if(!/\.zip$/i.test(f.name)){ $('#status').textContent = 'Please select a .zip export.'; return; } $('#status').textContent='Uploading…'; loadZip(f).catch(err=>{ $('#status').textContent = err.message; }); });
 
-  $('#btnPreview').addEventListener('click', ()=>{ if(inZip) preview().catch(err=>log('error:',err.message)); });
-  $('#btnGo').addEventListener('click', ()=>{ if(inZip) transform().catch(err=>log('error:',err.message)); });
-
-  // PDF buttons
-  $('#btnPdfRFQ').addEventListener('click', ()=>{
-    if(!lastManifest){ const opts=currentOpts(); lastManifest=buildManifest(opts); }
-    window.pdfBuilder && window.pdfBuilder.buildRFQ(lastManifest, { titleFrom: $('#rootName').value });
-  });
-  $('#btnPdfPO').addEventListener('click', ()=>{
-    if(!lastManifest){ const opts=currentOpts(); lastManifest=buildManifest(opts); }
-    window.pdfBuilder && window.pdfBuilder.buildPO(lastManifest, { titleFrom: $('#rootName').value });
-  });
+  $('#btnGo').addEventListener('click', ()=>{ if(inZip) onDownload().catch(err=>{ $('#status').textContent=err.message; }); });
 })();
