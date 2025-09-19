@@ -4,46 +4,46 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Drawing Package Builder</title>
-  <link rel="stylesheet" href="assets/styles.css?v=81"/>
+  <link rel="stylesheet" href="assets/styles.css?v=95"/>
 </head>
 <body>
-  <main>
+  <div class="bg">
+    <img src="assets/filterbelt.jpeg" alt="Background"/>
+  </div>
+
+  <header class="site">
+    <div class="brand"><span class="dot"></span><span class="name">Drawing Package Builder</span></div>
+    <div class="tagline">Build RFQ/PO drawing packages from export zips</div>
+  </header>
+
+  <main class="panel">
     <div class="row">
-      <label>Mode
-        <select id="mode">
-          <option value="rfq">RFQ</option>
-          <option value="po" selected>PO</option>
-        </select>
+      <label><span class="badge">Mode</span>
+        <select id="mode"><option value="rfq">RFQ</option><option value="po" selected>PO</option></select>
       </label>
-      <label>Top folder
+      <label><span class="badge">Top folder</span>
         <input id="rootName" placeholder="PO12345 Drawing package" value="PO Drawing package"/>
       </label>
+      <div class="spacer"></div>
+      <button id="btnEmail" class="ghost" disabled>RFQ Email Template</button>
+      <button id="btnEml" class="ghost" disabled>Download RFQ .eml</button>
+      <button id="btnGo" class="primary" disabled>Download</button>
     </div>
-
-    <div class="row">
-      <div class="badge">Title</div>
-      <div id="titleOut" class="title">(not detected)</div>
-    </div>
-
-    <div id="drop" class="drop" tabindex="0">
+    <div class="row tight"><div class="badge">Title</div><div id="titleOut" class="title">(not detected)</div></div>
+    <div id="drop" class="drop" tabindex="0" aria-label="Upload export zip">
       <input id="file" type="file" accept=".zip,application/zip"/>
       <div class="cta">Drop export.zip here or <label for="file" class="btn">Browse</label></div>
       <div id="fileInfo" class="muted"></div>
     </div>
-
-    <div class="actions">
-      <button id="btnGo" class="primary" disabled>Download</button>
-      <div id="status" class="muted">No file loaded.</div>
-    </div>
-
+    <div class="status muted" id="status">No file loaded.</div>
     <pre id="preview" class="preview muted">(load a zip to preview)</pre>
   </main>
 
-  <!-- Libraries (no integrity attributes) -->
+  <footer class="footer">© 2025 Cubility — Internal tooling mockup</footer>
+
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-
-  <script defer src="assets/app.js?v=81"></script>
+  <script defer src="assets/app.js?v=95"></script>
 </body>
 </html>

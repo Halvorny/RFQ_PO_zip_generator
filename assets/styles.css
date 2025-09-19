@@ -1,17 +1,46 @@
-*{box-sizing:border-box}body{margin:0;background:#0b0f14;color:#e6edf3;font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial}
-main{max-width:860px;margin:48px auto;padding:0 16px;display:flex;flex-direction:column;gap:16px}
-.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:#a0aec0}
-select,input{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px 12px;min-width:240px}
-.drop{border:2px dashed #334155;border-radius:14px;padding:22px;text-align:center}
-.drop.dragover{border-color:#60a5fa;background:#0d1528}
-.cta{margin:6px 0 2px 0}
-.btn{appearance:none;border:1px solid #334155;background:#0b1220;color:#e5e7eb;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer}
-.primary{appearance:none;border:1px solid #1d4ed8;background:#0f172a;color:#e5e7eb;border-radius:10px;padding:12px 16px;font-weight:700;cursor:pointer}
-.primary[disabled]{opacity:.5;cursor:not-allowed}
-.actions{display:flex;align-items:center;gap:12px;justify-content:space-between}
-.muted{color:#7b8794;font-size:14px}
-.small{font-size:12px}
-.preview{max-height:360px;overflow:auto;background:#0b1220;border:1px solid #334155;border-radius:10px;padding:10px;white-space:pre}
-.badge{background:#0b1220;border:1px solid #334155;border-radius:8px;padding:6px 10px;color:#cbd5e1;font-size:12px}
-.title{font-weight:600}
+/* Mockup-matched duotone + UI + email button */
+:root{
+  --panel:#ffffff;
+  --text:#0b0b0b;
+  --muted:#475569;
+  --border:#e5e7eb;
+  --primary:#e10600;
+  --primary-ink:#ffffff;
+  --focus:#fecaca;
+  --code-bg:#f8fafc;
+}
+*{box-sizing:border-box}
+html,body{height:100%} body{margin:0;color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,Noto Sans,sans-serif}
+
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden}
+.bg img{
+  position:absolute; width:120%; height:120%; left:-10%; top:-10%; object-fit:cover;
+  filter: grayscale(100%) contrast(1.2) brightness(1.05);
+  mix-blend-mode:multiply;
+}
+.bg::after{
+  content:""; position:absolute; inset:0;
+  background:linear-gradient(120deg, rgba(225,6,0,.45), rgba(26,54,84,.55));
+}
+
+header.site{max-width:980px;margin:28px auto 0;padding:0 24px;display:flex;align-items:center;justify-content:space-between;color:#000}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}.brand .dot{width:18px;height:18px;background:var(--primary);border-radius:2px}
+.tagline{color:#000; font-size:13px}
+
+.panel{max-width:980px;margin:32px auto;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:20px 24px;box-shadow:0 10px 30px rgba(2,6,23,0.12)}
+.row{display:flex;gap:16px;align-items:center;margin-bottom:14px;flex-wrap:wrap}.row.tight{margin-top:-2px}.spacer{flex:1 1 auto}
+.badge{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.title{font-size:18px;font-weight:650}
+
+.drop{border:1.5px dashed #cbd5e1;background:#ffffffcc;padding:18px;border-radius:12px;text-align:center;outline:none}
+.drop:focus{box-shadow:0 0 0 3px var(--focus)} .drop input{display:none}
+.btn,.primary,.ghost{display:inline-flex;align-items:center;justify-content:center;padding:8px 14px;border-radius:10px;cursor:pointer;border:0;font-weight:600}
+.btn{background:#ffe4e6;color:#991b1b}.btn:hover{filter:brightness(.98)}
+.primary{background:var(--primary);color:var(--primary-ink)}.primary:hover{filter:brightness(.96)}.primary[disabled]{opacity:.6;cursor:not-allowed}
+.ghost{background:#fff;border:1px solid var(--border);color:#0b0b0b} .ghost:hover{filter:brightness(.98)} .ghost[disabled]{opacity:.6;cursor:not-allowed}
+.status{margin:10px 0 6px}
+.muted{color:var(--muted)}
+.preview{background:var(--code-bg);border:1px solid var(--border);border-radius:12px;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,"Liberation Mono",monospace;font-size:12.5px;white-space:pre;overflow:auto;max-height:320px}
+label{display:flex;gap:6px;align-items:center} input,select{height:32px;padding:0 10px;border-radius:8px;border:1px solid var(--border);background:#fff;color:var(--text)}
+input::placeholder{color:#9aa3b2} input:focus,select:focus{outline:none;box-shadow:0 0 0 3px var(--focus)}
+
+.footer{max-width:980px;margin:8px auto 28px;padding:0 24px;color:#000;font-size:12px}

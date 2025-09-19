@@ -1,3 +1,4 @@
+
 'use strict';
 const $ = sel => document.querySelector(sel);
 const human = n => n.toLocaleString();
@@ -20,7 +21,6 @@ function autoRootForMode(mode){
 }
 function findPnDrwIndices(dirs){ const pnIdx = dirs.findIndex(s => /^PN[^/]+$/i.test(s)); if(pnIdx === -1 || pnIdx+1 >= dirs.length) return {pnIdx:-1, drwIdx:-1}; const drwIdx = /^DRW[^/]+$/i.test(dirs[pnIdx+1]) ? pnIdx+1 : -1; return {pnIdx, drwIdx}; }
 
-// -------- Manifest + Preview --------
 function buildManifest(mode, root){
   const items = [];
   for(const e of inEntries){
@@ -77,7 +77,7 @@ async function autoPreview(){
     const root = ($('#rootName').value || '').trim() || autoRootForMode(mode);
     const manifest = buildManifest(mode, root);
     let tree = buildTreeFromItems(manifest.items) || '';
-    tree = tree.replace(/\n+$/,''); // trim trailing newlines
+    tree = tree.replace(/\n+$/,''); 
     const totals = `Files: ${human(manifest.items.length)} · Drawings: ${human(manifest.groups.length)}`;
     $('#preview').textContent = (tree || '(no matches)') + '\n' + totals;
     $('#status').textContent = 'Preview updated.';
@@ -86,7 +86,6 @@ async function autoPreview(){
   }
 }
 
-// -------- Build outputs --------
 async function buildDrawingZipFromManifest(manifest){
   const out = new JSZip(); let n = 0;
   for(const it of manifest.items){
@@ -97,7 +96,6 @@ async function buildDrawingZipFromManifest(manifest){
   return { blob, count:n };
 }
 
-// --- XLSX detection helpers ---
 function listXlsxPaths(){
   const xs = [];
   for(const e of inEntries){
@@ -130,7 +128,6 @@ function findWorkbookEntry(){
   return cands[0] || null;
 }
 
-// === Deterministic C4:F4 readers ===
 function a1ToColRow(a1){
   const m = /^([A-Z]+)(\d+)$/.exec(a1.toUpperCase());
   if(!m) return null;
@@ -146,7 +143,6 @@ function withinC4toF4(a1){
   return cr.row === 4 && cr.col >= 3 && cr.col <= 6;
 }
 
-// --- Fallback XLSX: read C4..F4 from sheet1.xml ---
 async function readC4F4_fromFallback(buf){
   const inner = await JSZip.loadAsync(buf);
   const getText = (p)=> inner.file(p) ? inner.file(p).async('string') : null;
@@ -189,7 +185,6 @@ async function readC4F4_fromFallback(buf){
   return vals.join(' ');
 }
 
-// --- SheetJS: read C4..F4 from first sheet ---
 function readC4F4_fromSheetJS(buf){
   const wb = XLSX.read(buf, { type:'array' });
   const first = wb.SheetNames && wb.SheetNames.length ? wb.SheetNames[0] : null;
@@ -205,7 +200,6 @@ function readC4F4_fromSheetJS(buf){
   return parts.join(' ');
 }
 
-// --- Title extraction: use C4:F4 ---
 async function extractTitleSmart(){
   const picked = findWorkbookEntry();
   const all = listXlsxPaths();
@@ -215,9 +209,7 @@ async function extractTitleSmart(){
     try{
       const t = readC4F4_fromSheetJS(buf);
       if(t) return { title:t, picked, all, engine:'sheetjs-C4F4' };
-    }catch(e){
-      // ignore
-    }
+    }catch(e){}
   }
   try{
     const t2 = await readC4F4_fromFallback(buf);
@@ -227,9 +219,7 @@ async function extractTitleSmart(){
   }
 }
 
-// --- RFQ PDF finder ---
 function findTopLevelRFQPdf(){
-  // Prefer exact <ID>/<ID>.pdf when we can infer ID.
   const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '';
   if(id){
     const want = `${id}/${id}.pdf`.toLowerCase();
@@ -238,7 +228,6 @@ function findTopLevelRFQPdf(){
       if(p === want) return { path:e.path, entry:e.entry };
     }
   }
-  // Otherwise: match "RFQ*/RFQ*.pdf" exactly one folder down.
   const cands = [];
   const rx = /^([^/]+)\/\1\.pdf$/i;
   for(const e of inEntries){
@@ -298,7 +287,6 @@ function download(name, blob){
   setTimeout(()=>URL.revokeObjectURL(a.href), 15000);
 }
 
-// -------- Build the final deliverable (top-level zip) --------
 async function onDownload(){
   try{
     if(!window.JSZip){ alert('JSZip failed to load (CDN blocked?).'); return; }
@@ -337,9 +325,8 @@ async function onDownload(){
   }
 }
 
-// -------- Load ZIP + init --------
 async function loadZip(file){
-  $('#btnGo').disabled = true;
+  $('#btnGo').disabled = true; refreshEmailBtn(); refreshEmlBtn();
   try{
     if(!window.JSZip){ alert('JSZip failed to load (CDN blocked?).'); return; }
     $('#status').textContent = 'Reading…';
@@ -358,15 +345,172 @@ async function loadZip(file){
     }catch(_){ extractedTitle=''; }
     $('#titleOut').textContent = extractedTitle || '(not detected)';
 
-    $('#btnGo').disabled = false;
+    $('#btnGo').disabled = false; refreshEmailBtn(); refreshEmlBtn();
     autoPreview();
   }catch(e){
-    $('#status').textContent = e.message || 'Failed to read zip'; $('#btnGo').disabled = true; $('#preview').textContent = '(no preview)';
+    $('#status').textContent = e.message || 'Failed to read zip'; $('#btnGo').disabled = true; refreshEmailBtn(); refreshEmlBtn(); $('#preview').textContent = '(no preview)';
   }
 }
 
+
+// ---- RFQ Email Template ----
+let rfqEmailTemplateCache = null;
+async function loadRfqTemplate(){
+  if(rfqEmailTemplateCache !== null) return rfqEmailTemplateCache;
+  try{
+    const res = await fetch('assets/rfq_email_template.txt', {cache:'no-store'});
+    rfqEmailTemplateCache = await res.text();
+  }catch(e){
+    rfqEmailTemplateCache = 'Hello,\n\nPlease find the RFQ package attached.\n\nRegards,\n';
+  }
+  return rfqEmailTemplateCache;
+}
+function computeId(){
+  const extract = (text)=>{ if(!text) return ''; const m = /(?:RFQ|PO)\s*([0-9]+(?:-\d+)*)/i.exec(text); return m ? m[1] : ''; };
+  return extract(detectedRoot) || extract(lastFileName) || '';
+}
+async function onEmail(){
+  const mode = document.querySelector('#mode').value;
+  if(mode !== 'rfq') return; // safety
+  const id = computeId();
+  const title = (typeof extractedTitle === 'string' && extractedTitle.trim()) ? extractedTitle.trim() : '';
+  const subject = `RFQ${id}${title ? ' - ' + title : ''}`.trim();
+  const body = await loadRfqTemplate();
+  const href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = href;
+}
+function refreshEmailBtn(){
+  const btn = document.querySelector('#btnEmail');
+  const ok = !!(inZip) && document.querySelector('#mode').value === 'rfq';
+  btn.disabled = !ok;
+}
+
+
+// ===== EML utilities =====
+function b64FromBlob(blob){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=>{
+      const s = String(r.result || '');
+      const comma = s.indexOf(',');
+      resolve(comma >= 0 ? s.slice(comma+1) : s);
+    };
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+function wrap76(s){
+  const out = [];
+  for(let i=0;i<s.length;i+=76) out.push(s.slice(i,i+76));
+  return out.join('\r\n');
+}
+function rfc2047(subject){
+  // minimal RFC2047 for UTF-8 text; fall back to raw if ASCII
+  if (/^[\x00-\x7F]*$/.test(subject)) return subject;
+  const enc = btoa(unescape(encodeURIComponent(subject)));
+  return '=?UTF-8?B?' + enc + '?=';
+}
+
+async function buildRfqEml(manifest){
+  const mode = manifest.mode;
+  if(mode !== 'rfq') throw new Error('EML is RFQ-only');
+
+  // Build artifacts
+  const { blob: drawingBlob } = await buildDrawingZipFromManifest(manifest);
+  const overviewBlob = makeOverviewPdf(manifest);
+  const rfq = findTopLevelRFQPdf();
+  const rfqBlob = rfq ? new Blob([await rfq.entry.async('arraybuffer')], {type:'application/pdf'}) : null;
+
+  // Names & sizes
+  const id = (extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '').trim();
+  const safeTitle = (extractedTitle||'').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+  const subjectRaw = `RFQ${id}${safeTitle? ' - '+safeTitle : ''}`.trim();
+  const subject = rfc2047(subjectRaw);
+  const drawingName = `${manifest.root}.zip`;
+  const overviewName = 'File overview.pdf';
+  const rfqName = rfq ? rfq.path.split('/').pop() : 'RFQ.pdf';
+
+  const drawingSize = drawingBlob.size || '';
+  const overviewSize = overviewBlob.size || '';
+  const rfqSize = rfqBlob ? (rfqBlob.size||'') : '';
+
+  // Body
+  const bodyText = await loadRfqTemplate();
+
+  // Base64 payloads
+  const b64zip = wrap76(await b64FromBlob(drawingBlob));
+  const b64ov  = wrap76(await b64FromBlob(overviewBlob));
+  const b64rfq = rfqBlob ? wrap76(await b64FromBlob(rfqBlob)) : '';
+
+  const boundary = '=_rfq_' + Math.random().toString(36).slice(2);
+  const parts = [];
+  parts.push(
+`MIME-Version: 1.0
+Date: ${new Date().toUTCString()}
+Subject: ${subject}
+X-Unsent: 1
+Content-Type: multipart/mixed; boundary="${boundary}"
+
+--${boundary}
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 7bit
+
+${bodyText}
+
+--${boundary}
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="${drawingName}"${drawingSize? `; size=${drawingSize}`:''}
+
+${b64zip}
+
+--${boundary}
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="${overviewName}"${overviewSize? `; size=${overviewSize}`:''}
+
+${b64ov}
+`);
+  if (rfqBlob){
+    parts.push(
+`--${boundary}
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="${rfqName}"${rfqSize? `; size=${rfqSize}`:''}
+
+${b64rfq}
+`);
+  }
+  parts.push(`--${boundary}--`);
+  const eml = parts.join('\r\n');
+  return new Blob([eml], {type:'message/rfc822'});
+}
+async function onDownloadEml(){
+  try{
+    const mode = $('#mode').value;
+    if(mode !== 'rfq'){ return; }
+    const root = ($('#rootName').value || '').trim() || autoRootForMode(mode);
+    const manifest = buildManifest(mode, root);
+    if(manifest.items.length === 0){ $('#status').textContent = 'No files found in DRW folders.'; return; }
+    $('#status').textContent = 'Building .eml…';
+    const emlBlob = await buildRfqEml(manifest);
+    const id = extractIdCandidate(detectedRoot) || extractIdCandidate(lastFileName) || '';
+    const safeTitle = (extractedTitle||'').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+    const name = `RFQ${id}${safeTitle? ' - '+safeTitle : ''}.eml`.trim();
+    download(name, emlBlob);
+    $('#status').textContent = `Downloaded: ${name}`;
+  }catch(e){
+    $('#status').textContent = e.message || 'EML build failed';
+  }
+}
+function refreshEmlBtn(){
+  const btn = document.querySelector('#btnEml');
+  const ok = !!(inZip) && document.querySelector('#mode').value === 'rfq';
+  btn.disabled = !ok;
+}
+
 (function init(){
-  $('#mode').addEventListener('change', ()=>{ $('#rootName').value = autoRootForMode($('#mode').value); autoPreview(); });
+  $('#mode').addEventListener('change', ()=>{ $('#rootName').value = autoRootForMode($('#mode').value); autoPreview(); refreshEmailBtn(); refreshEmlBtn(); });
   $('#rootName').addEventListener('input', ()=> autoPreview());
 
   const drop = $('#drop'); const input = $('#file');
@@ -377,4 +521,6 @@ async function loadZip(file){
   input.addEventListener('change', ()=>{ const f = input.files[0]; if(!f) return; if(!/\.zip$/i.test(f.name)){ $('#status').textContent = 'Please select a .zip export.'; return; } $('#status').textContent='Uploading…'; loadZip(f).catch(err=>{ $('#status').textContent = err.message; }); });
 
   $('#btnGo').addEventListener('click', ()=>{ if(inZip) onDownload().catch(err=>{ $('#status').textContent=err.message; }); });
+  $('#btnEmail').addEventListener('click', ()=> onEmail());
+  $('#btnEml').addEventListener('click', ()=> onDownloadEml());
 })();
